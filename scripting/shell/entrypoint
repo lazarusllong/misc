@@ -1,0 +1,1125 @@
+#!/bin/sh
+# shellcheck disable=2317 enable=add-default-case,avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,quote-safe-variables,require-variable-braces
+
+[ "${DEBUG:=0}" -ne 0 ] && { VERBOSE="${DEBUG}" ; }
+[ "${VERBOSE:=0}" -ne 0 ] && { set -x ; }
+
+# entrypoint
+
+# (2023-07-17)
+
+# Docker/Kubernetes image entry point script launcher, (c) 2023 Lazarus Long <lazarus.long@sapo.pt>
+
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+
+# This program is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+
+# Modified:
+#	2023-07-17 - Initial version
+
+# shellcheck disable=2034 # unused variable (warning)
+{
+
+# ===============================
+# Script framework model 20230712
+# ===============================
+readonly FRAMEWORK=20230712
+
+#
+# Internals
+#
+readonly AUTHOR="Lazarus Long"
+readonly COPYRIGHT="2023 ${AUTHOR}"
+readonly DESC="Docker/Kubernetes image entry point script launcher"
+readonly VERSION="20230717.1401"
+
+#
+# Constants
+#
+readonly false=0
+readonly true=$((!false))
+readonly eok=$((false))
+readonly enok=$((true))
+readonly ecmd=$((enok + true))
+readonly eneg=$(((true << 8) - true))
+readonly mark="# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-="
+
+#
+# Binaries
+#
+basename="$(command -v basename)" && readonly basename || MISSBINS="${MISSBINS} basename"
+cut="$(command -v cut)" && readonly cut || MISSBINS="${MISSBINS} cut"
+date="$(command -v date)" && readonly date || MISSBINS="${MISSBINS} date"
+dirname="$(command -v dirname)" && readonly dirname || MISSBINS="${MISSBINS} dirname"
+head="$(command -v head)" && readonly head || MISSBINS="${MISSBINS} head"
+id="$(command -v id)" && readonly id || MISSBINS="${MISSBINS} id"
+mktemp="$(command -v mktemp)" && readonly mktemp || MISSBINS="${MISSBINS} mktemp"
+tac="$(command -v tac)" && readonly tac || MISSBINS="${MISSBINS} tac"
+tr="$(command -v tr)" && readonly tr || MISSBINS="${MISSBINS} tr"
+uname="$(command -v uname)" && readonly uname || MISSBINS="${MISSBINS} uname"
+
+#
+# Runtime
+#
+INVOCATION="$(${basename} "${0}")" && readonly INVOCATION
+CMDLINE="${0} ${*}" && readonly CMDLINE
+CURDATE="$(${date} "+%Y%m%d")" && readonly CURDATE
+CURTIME="$(${date} "+%H%M%S")" && readonly CURTIME
+DATETIME="${CURDATE}${CURTIME}" && readonly DATETIME
+ARCH="$(${uname} -m |sed -e 's|^x86_|amd|;s|^\(i\)\([[:digit:]]\)\(86\)|\13\3|')" && readonly ARCH
+DISTRO="$(if [ -f /etc/os-release ] ; then grep -Po '^ID=\K.*' /etc/os-release |${tr} -d \" ; else printf -- "undef" ; fi)" && readonly DISTRO
+DISTVER="$(if [ -f /etc/os-release ] ; then grep -Po '^VERSION_ID=\K.*' /etc/os-release |${tr} -d \" ; else printf -- "undef" ; fi)" && readonly DISTVER
+SHELL="$(${basename} "${SHELL}")" && readonly SHELL
+(unset "EUID" 2>/dev/null) && { EUID="$(id -u)" && readonly EUID ; }
+EGID="$(${id} -g)" && readonly EGID
+RUID="$(${id} -ur)" && readonly RUID
+RGID="$(${id} -gr)" && readonly RGID
+LOG="${INVOCATION##.*}.log" && readonly LOG
+STARTDIR="$(pwd)" && readonly STARTDIR
+SCRIPTDIR="$(cd "$(${dirname} "${0}")" 2>/dev/null && pwd)" && readonly SCRIPTDIR
+TEMPDIR="$(${mktemp} -q -d 2>/dev/null)" && readonly TEMPDIR
+WORKDIR="${TEMPDIR}"
+LOGFILE="${WORKDIR}/${LOG}"
+# Boolean
+FORCE="${false}"
+FULLOG="${false}"
+HEADER="${true}"
+KEEPWD="${false}"
+NOLOG="${true}"
+QUIET="${false}"
+
+}
+# end of shellcheck disable=2034 # unused variable (warning)
+
+#
+# Trap functions
+#
+__func_dohook() {
+	__hook="${1}"
+	__funcid=" function$"
+
+	{ type "${__hook}" |grep -q -E "${__funcid}" ; } >/dev/null 2>&1
+
+	[ ${?} -eq "${false}" ] && eval "${__hook}"
+
+	return ${?}
+}
+
+__func_init() {
+	trap __func_exit "${eok}"
+
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && [ "${DEBUG:=${false}}" -ne "${false}" ] && trap __func_break HUP INT QUIT ABRT
+
+	__func_dohook "hook_oninit"
+	return ${?}
+}
+
+__func_exit() {
+	__func_dohook "hook_onexit"
+
+	[ "${VERBOSE:=${false}}" -ne "${false}" ] && { set +x ; }
+
+	return ${?}
+}
+
+__func_break() {
+	__func_dohook "hook_onbreak"
+	return ${?}
+}
+
+# hook_on<break|exit|init> - _MUST_ be declared before call to __func_init
+#
+# hook_onbreak - optional script to be run on signals HUP INT QUIT ABRT
+hook_onbreak() {
+	log_end
+	return ${?}
+}
+#
+# hook_onexit - optional script to be run on normal exit
+hook_onexit() {
+	log_end
+
+	{ [ "${WORKDIR}" != "${TEMPDIR}" ] || [ "${KEEPWD}" -ne "${true}" ] ; } && [ -d "${TEMPDIR}" ] && rm -fr "${TEMPDIR}"
+
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && printf -- "\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n\tRunning in development mode, some functionalities won't work as expected!\n\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n"
+
+	return ${?}
+}
+#
+# hook_oninit - optional script to be run on initialization
+hook_oninit() {
+	[ -f "/etc/os-release" ] || { printf -- "\nCRITICAL:\tThis system is not LSB compliant, unable to proceed!\n\n" >&2 && return "${enok}" ; }
+
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && printf -- "\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n\tRunning in development mode, some functionalities won't work as expected!\n\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n"
+
+	return "${eok}"
+}
+#
+__func_init || exit ${?}
+# end of hook_on<break|exit|init>
+
+# ============================================
+# Script specific variables go below this line
+# ============================================
+
+# Binaries
+runparts="$(command -v run-parts)" && readonly runparts || MISSBINS="${MISSBINS} run-parts"
+
+# Variables
+EXPORT_ENV="CURDATE CURTIME DATETIME ARCH DISTRO DISTVER EUID EGID RUID RGID STARTDIR SCRIPTDIR WORKDIR LOG LOGFILE FORCE NOLOG QUIET" && readonly EXPORT_ENV
+
+# Runtime
+WORKDIR="${WORKDIR:-"${STARTDIR}"}"
+# Boolean
+NOLOG="${true}" && readonly NOLOG
+QUIET="${true}"
+
+# ============================================
+# Script specific variables go above this line
+# ============================================
+
+#
+# Functions
+#
+isnum() {
+	_in_ret=${true}
+
+	if [ ${#} -ne "${false}" ] ; then
+		_in_ret="$(printf -- "%b" "${*}" |${tr} -d '[:digit:]' 2>/dev/null)" && _in_ret=$((!(!${#_in_ret})))
+	fi
+
+	printf -- "%d" "${_in_ret}"
+	return "${_in_ret}"
+}
+
+isxnum() {
+	_ix_ret=${true}
+
+	if [ ${#} -ne "${false}" ] ; then
+		_ix_ret="$(printf -- "%b" "${*}" |${tr} -d '[:xdigit:]xX' 2>/dev/null)" && _ix_ret=$((!(!${#_ix_ret})))
+	fi
+
+	printf -- "%d" "${_ix_ret}"
+	return "${_ix_ret}"
+}
+
+tolower() {
+	printf -- "%b" "${*}" |${tr} '[:upper:]' '[:lower:]'
+	return "${eok}"
+}
+
+toupper() {
+	printf -- "%b" "${*}" |${tr} '[:lower:]' '[:upper:]'
+	return "${eok}"
+}
+
+_ctrim() {
+	_ct_pos=${1}
+	_ct_char="${2}"
+
+	shift 2
+
+	if [ "${_ct_pos}" -eq "${false}" ] ; then
+		printf -- "%b" "${*}" |sed -Ee "s|^(${_ct_char})*||"
+	elif [ "${_ct_pos}" -eq "${true}" ] ; then
+		printf -- "%b" "${*}" |sed -Ee "s|(${_ct_char})*$||"
+	fi
+
+	return "${eok}"
+}
+
+lctrim() {
+	_ctrim 0 "${@}"
+	return ${?}
+}
+
+rctrim() {
+	_ctrim 1 "${@}"
+	return ${?}
+}
+
+ctrim() {
+	_char="${1}"
+
+	shift
+	rctrim "${_char}" "$(lctrim "${_char}" "${@}")"
+	return ${?}
+}
+
+ltrim() {
+	lctrim "[[:space:]]" "${@}"
+	return ${?}
+}
+
+rtrim() {
+	rctrim "[[:space:]]" "${@}"
+	return ${?}
+}
+
+trim() {
+	rtrim "$(ltrim "${@}")"
+	return ${?}
+}
+
+squeeze() {
+	trim "$(printf -- "%b" "${*}" |${tr} -s '[:space:]')"
+	return ${?}
+}
+
+isuser() {
+	_iu_ret=${true}
+
+	if isnum "${*}" >/dev/null ; then
+		if [ "${EUID}" -eq "$((${*}))" ] ; then
+                        _iu_ret=${false}
+		fi
+	else
+		if [ "$(tolower "$(${id} -un)")" = "$(tolower "${@}")" ] ; then
+			_iu_ret=${false}
+		fi
+	fi
+
+	printf -- "%d" "${_iu_ret}"
+	return "${_iu_ret}"
+}
+
+isroot() {
+	_ir_ret=$((!EUID))
+
+	printf -- "%d" "${_ir_ret}"
+	return "${_ir_ret}"
+}
+
+ispath() {
+	_ip_ret="${*}"
+
+	[ -d "${_ip_ret}" ] || _ip_ret=""
+
+	_ip_ret=$((!${#_ip_ret}))
+	printf -- "%u" "${_ip_ret}"
+	return "${_ip_ret}"
+}
+
+isurl() {
+	printf -- "%b" "${*}" |grep -E -q '^(https?|ftps?|file)://[-[:alnum:]\+&@#/%?=~_|!:,.;]*[-[:alnum:]\+&@#/%=~_|]\.[-[:alnum:]\+&@#/%?=~_|!:,.;]*[-[:alnum:]\+&@#/%=~_|]$'
+	_il_ret=${?}
+	printf -- "%u" "${_il_ret}"
+	return "${_il_ret}"
+}
+
+reverselist() {
+	trim "$(printf -- "%b" "${*} " |${tr} '[:space:]' '\n' |${tac} |${tr} '\n' ' ')"
+	return "${eok}"
+}
+
+iswriteable() {
+	if (unset "${*}" 2>/dev/null) ; then
+		return "${eok}"
+	else
+		return "${enok}"
+	fi
+}
+
+getvar() {
+	grep -E "${1}" "${2}" |grep -Ev "^[[:space:]]*#" |sed -e "s/^.*=[[:space:]]*//;s/^\${${1}:-\"*//;s/[[:space:]]*\"}*//"
+	return "${eok}"
+}
+
+printdatetime() {
+	unset _sep _dt _dsep _hsep
+
+	if [ ${#} -eq 2 ] ; then
+		_sep="${2}"
+		_dt="${1}"
+	elif [ ${#} -eq 1 ] ; then
+		if [ ${#1} -le 2 ] ; then
+			_sep="${1}"
+			_dt="${DATETIME}"
+		elif [ ${#1} -eq ${#DATETIME} ] ; then
+			_dt="${1}"
+		else
+			return "${enok}"
+		fi
+	elif [ ${#} -eq 0 ] ; then
+		_dt="${DATETIME}"
+	else
+		return "${enok}"
+	fi
+
+	if [ ${#_sep} -eq 0 ] ; then
+		_dsep="${_sep}"
+		_hsep="${_sep}"
+	elif [ ${#_sep} -eq 1 ] ; then
+		_dsep="${_sep}"
+	elif [ ${#_sep} -eq 2 ] ; then
+		_dsep="${_sep%?}"
+		_hsep="${_sep#?}"
+	else
+		return "${enok}"
+	fi
+
+	printf -- "%s" "$(printf -- "%b" "${_dt}" |${cut} --characters=-4,5-6,7-8 --output-delimiter="${_dsep}")"
+
+	if [ ${#_hsep} -gt "${false}" ] ; then
+		printf -- ' '
+	fi
+
+	if [ ${#_hsep} -gt "${false}" ] || [ ${#_dsep} -eq "${false}" ] ; then
+		printf -- "%s" "$(printf -- "%b" "${_dt}" |${cut} --characters=9-10,11-12,13- --output-delimiter="${_hsep}")"
+	fi
+
+	printf -- '\n'
+	return "${eok}"
+}
+
+version2date() {
+	unset _sep _ver _dsep _hsep _time _base
+
+	if [ ${#} -eq 2 ] ; then
+		_sep="${2}"
+		_ver="${1}"
+	elif [ ${#} -eq 1 ] ; then
+		if [ ${#1} -le 2 ] ; then
+			_sep="${1}"
+			_ver="${VERSION}"
+		elif [ ${#1} -eq ${#VERSION} ] ; then
+			_ver="${1}"
+		else
+			return "${enok}"
+		fi
+	elif [ ${#} -eq 0 ] ; then
+		_ver="${VERSION}"
+	else
+		return "${enok}"
+	fi
+
+	if [ ${#_sep} -eq 0 ] ; then
+		_dsep="${_sep}"
+		_hsep="${_sep}"
+	elif [ ${#_sep} -eq 1 ] ; then
+		_dsep="${_sep}"
+	elif [ ${#_sep} -eq 2 ] ; then
+		_dsep="${_sep%?}"
+		_hsep="${_sep#?}"
+	else
+		return "${enok}"
+	fi
+
+	_time="${_ver#*.}"
+	_base="${_ver#????}" && _base="${_base%.????}"
+	printf -- "%s%c%s%c%s" "${_ver%????.????}" "${_dsep}" "${_base%??}" "${_dsep}" "${_base#??}"
+
+	if [ ${#_hsep} -gt "${false}" ] ; then
+		printf -- ' '
+	fi
+
+	if [ ${#_hsep} -gt "${false}" ] || [ ${#_dsep} -eq "${false}" ] ; then
+		printf -- "%s%c%s" "${_time%??}" "${_hsep}" "${_time#??}"
+	fi
+
+	printf -- '\n'
+	return "${eok}"
+}
+
+date2version() {
+	printf -- "%s\n" "$(printf -- "%b" "${1}" |${cut} --characters=-8,9-12 --output-delimiter=".")"
+	return "${eok}"
+}
+
+pause() {
+	_mode="$(tolower "${1:-"key"}")"
+
+	case "${_mode}" in
+		br)
+			_msg="Break? [y|N]: "
+			;;
+		exit)
+			_msg="Press [Enter] to exit... "
+			;;
+		go)
+			_msg="Continue? [Y|n]: "
+			;;
+		key)
+			_msg="Press [Enter] to continue... "
+			;;
+		*)
+			msgerr_pause "${_mode}"
+			return "${eneg}"
+			;;
+	esac
+
+	printf -- "%s" "${_msg}"
+
+	if [ "${_mode}" = "exit" ] || [ "${_mode}" = "key" ] ; then
+		stty -echo
+	fi
+
+	read -r _reply
+
+	if [ "${_mode}" = "exit" ] || [ "${_mode}" = "key" ] ; then
+		stty echo
+	fi
+
+	printf -- '\n'
+
+	case "${_mode}" in
+		br)
+			if [ "${_reply}" = 'y' ] || [ "${_reply}" = 'Y' ] ; then
+				return "${enok}"
+			else
+				return "${eok}"
+			fi
+			;;
+		exit)
+			return "${enok}"
+			;;
+		go)
+			if [ "${_reply}" = 'n' ] || [ "${_reply}" = 'N' ] ; then
+				return "${enok}"
+			else
+				return "${eok}"
+			fi
+			;;
+		key)
+			return "${eok}"
+			;;
+		*)
+			msgerr_pause "${_mode}"
+			return "${eneg}"
+			;;
+	esac
+}
+
+reprintc() {
+	_i=${false}
+	_count=${1}
+	_char="${2:-"-"}"
+	_sep="${3:-"+"}"
+
+	printf -- "%c" "${_sep}"
+
+	while [ "${_i}" -lt "${_count}" ] ; do
+		printf -- "%c" "${_char}"
+		_i=$((_i + true))
+	done
+	
+	return "${eok}"
+}
+
+fnotempty() {
+	_file="${1}"
+	_timeout=${2:-31}
+	_i=0
+
+	if [ -n "${_file}" ] ; then
+		while [ "${_i}" -le "${_timeout}" ] ; do
+			if [ -s "${_file}" ] ; then
+				return "${eok}"
+			fi
+
+			sleep "${true}"
+			_i=$((_i + true))
+		done
+	fi
+
+	return "${enok}"
+}
+
+t6l() {
+	_mov=1
+	unset _action _opts
+
+	case "$(tolower "${1}")" in
+		save)
+			_action="sc"
+			;;
+		restore)
+			_action="rc"
+			;;
+		hide)
+			_action="civis"
+			;;
+		show)
+			_action="cnorm"
+			;;
+		left)
+			_action="cub"
+			_opts=" ${2:-${_mov}}"
+			;;
+		right)
+			_action="cuf"
+			_opts=" ${2:-${_mov}}"
+			;;
+		up)
+			_action="cuu"
+			_opts=" ${2:-${_mov}}"
+			;;
+		down)
+			_action="cud"
+			_opts=" ${2:-${_mov}}"
+			;;
+		pos)
+			_action="cup"
+			_opts=" ${2:-${_mov}}"
+			_opts="${_opts} ${3:-${_mov}}"
+			;;
+		*)
+			_action="${1}"
+			shift
+			[ ${#} -gt "${false}" ] && _opts=" ${*}"
+			;;
+	esac
+
+	tput "${_action}${_opts}"
+	return ${?}
+}
+
+genpass() {
+	_len=${1:-24}
+
+	case "$(tolower "${2:-"high"}")" in
+		lowest)
+			_lvl="[:lower:]"
+			;;
+		low)
+			_lvl="[:alpha:]"
+			;;
+		high)
+			_lvl="[:alnum:]"
+			;;
+		highest)
+			_lvl="[:graph:]"
+			;;
+		*)
+			msgerr_genpass "${2}"
+			return "${enok}"
+			;;
+	esac
+
+	_gp_ret="$(${tr} -c -d "${_lvl}" </dev/urandom 2>/dev/null |${head} -c "${_len}")"
+
+	if [ ${#_gp_ret} -ne "${_len}" ] ; then
+		return "${enok}"
+	fi
+
+	printf -- "%s" "${_gp_ret}"
+	return $((!${#_gp_ret}))
+}
+
+header() {
+	printf -- "%s - %s (%s) - (c) %s\n\n" "${INVOCATION}" "${DESC}" "${VERSION}" "${COPYRIGHT}"
+	return "${eok}"
+}
+
+version() {
+	HEADER=${false}
+	printf -- "Version: %s\n" "${VERSION}"
+	msgout_version
+	return "${eok}"
+}
+
+# ============================================
+# Log initialization may need to be customized
+# ============================================
+log_init() {
+	if [ "${NOLOG}" -eq "${true}" ] ; then
+		return "${eok}"
+	fi
+
+	_static="INVOCATION CMDLINE CURDATE CURTIME DATETIME ARCH DISTRO DISTVER SHELL EUID EGID RUID RGID LOG STARTDIR SCRIPTDIR TEMPDIR EXPORT_ENV"
+	_runtime="WORKDIR LOGFILE"
+	_boolean="FORCE FULLOG HEADER KEEPWD NOLOG QUIET"
+
+	if [ -f "${LOGFILE}" ] ; then
+		_oldlog="${LOGFILE}.${DATETIME}"
+		mv -f "${LOGFILE}" "${_oldlog}"
+		_li_ret=${?}
+
+		if [ "${_li_ret}" -ne "${eok}" ] ; then
+			msgerr_log_init
+			return "${_li_ret}"
+		fi
+	fi
+
+	# shellcheck disable=2094 # read and write the same file (info)
+	{
+		printf -- "# %s\n\n# (%s)\n\n# %s\n\n" "$(${basename} "${LOGFILE}")" "$(printdatetime "-:")" "$(header)"
+
+		if [ "${FULLOG}" -eq "${true}" ] ; then
+			printf -- "Framework Model: %s\n\n" "${FRAMEWORK}"
+		fi
+
+		printf -- "%s\n\n"  "${mark}"
+
+		if [ "${FULLOG}" -eq "${true}" ] ; then
+			printf -- "Command Line:\n------------\n%s\n\n" "${CMDLINE}"
+			printf -- "Missing Binaries:\n----------------\n%s\n\n" "$(if [ -n "${MISSBINS}" ] ; then printf -- "%b" "${MISSBINS}" |${tr} '[:space:]' '\n' ; else printf -- "NONE" ; fi)"
+			printf -- "Static Variables:\n----------------\n"
+
+			for _st in ${_static} ; do
+				# shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				eval _val="\${""${_st}""}"
+				# end of shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				# shellcheck disable=2154 # referenced but not assigned (warning)
+				printf -- "%s=\"%s\"\n" "${_st}" "${_val}"
+				# end of shellcheck disable=2154 # referenced but not assigned (warning)
+				unset _val
+			done
+
+			printf -- "\nRuntime Variables:\n-----------------\n"
+
+			for _rt in ${_runtime} ; do
+				# shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				eval _val="\${""${_rt}""}"
+				# end of shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				# shellcheck disable=2154 # referenced but not assigned (warning)
+				printf -- "%s=\"%s\"\n" "${_rt}" "${_val}"
+				# end of shellcheck disable=2154 # referenced but not assigned (warning)
+				unset _val
+			done
+
+			printf -- "\nBoolean Flags:\n-----------------\n"
+
+			for _bl in ${_boolean} ; do
+				# shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				eval _val="\${""${_bl}""}"
+				# end of shellcheck disable=2027 # surrounding quotes unquote this (warning)
+				# shellcheck disable=2154 # referenced but not assigned (warning)
+				printf -- "%s=%s\n" "${_bl}" "$(if [ "${_val}" -eq "${false}" ] ; then printf -- "false" ; else printf -- "true" ; fi)"
+				# end of shellcheck disable=2154 # referenced but not assigned (warning)
+				unset _val
+			done
+
+			printf -- "\n%s\n%s\n\n" "${mark}" "${mark}"
+		fi
+	} >"${LOGFILE}"
+	# end of shellcheck disable=2094 # read and write the same file (info)
+
+	if [ -f "${_oldlog}" ] ; then
+		log_entry "Moving old log to '${_oldlog}'\n"
+	fi
+
+	return "${eok}"
+}
+
+log_end() {
+	if [ "${NOLOG}" -eq "${true}" ] ; then
+		return "${eok}"
+	fi
+
+	_newlog="${STARTDIR}/${LOG%.*}_${DATETIME}.${LOG##*.}"
+
+	log_entry "Closing log '${LOGFILE}'\n"
+
+	if [ -f "${_newlog}" ] ; then
+		mv -f "${_newlog}" "${_newlog}.${DATETIME}"
+		_le_ret=${?}
+
+		if [ "${_le_ret}" -ne "${eok}" ] ; then
+			msgerr_log_end_mv
+			return "${_le_ret}"
+		fi
+
+		log_entry "Moving old log to '${_newlog}.${DATETIME}'\n"
+	fi
+
+	log_entry "Copying log to '${_newlog}'\n"
+	printf -- "\n%s\n" "${mark}" >>"${LOGFILE}"
+	cp "${LOGFILE}" "${_newlog}" >/dev/null 2>&1
+	_le_ret=${?}
+
+	if [ "${_le_ret}" -ne "${eok}" ] ; then
+		msgerr_log_end_cp
+	fi
+
+	return "${_le_ret}"
+}
+
+log_entry() {
+	if [ "${NOLOG}" -eq "${true}" ] ; then
+		return "${eok}"
+	fi
+
+	if [ "${1}" = "${true}" ] ; then
+		shift "${true}"
+		printf -- "%b" "$(printf -- "%b" "${*}" |sed -e 's|\(\\n\)\{2,\}|\\n|g')" >>"${LOGFILE}" 2>&1
+
+	else
+		if [ "${ACTION-"_unset_"}" = "_unset_" ] ; then
+			printf -- "%b: (%s): %b" "$(${date} "+%F %T.%N %z")" "${INVOCATION}" "$(printf -- "%b" "${*}" |sed -e 's|\(\\n\)\{2,\}|\\n|g')" >>"${LOGFILE}" 2>&1
+		else
+			printf -- "%b: (%s) [%s]: %b" "$(${date} "+%F %T.%N %z")" "${INVOCATION}" "${ACTION}" "$(printf -- "%b" "${*}" |sed -e 's|\(\\n\)\{2,\}|\\n|g')" >>"${LOGFILE}" 2>&1
+		fi
+	fi
+
+	return "${eok}"
+}
+
+msg() {
+	if [ "${QUIET}" -ne "${true}" ] && [ "${HEADER}" -eq "${true}" ] ; then
+		header
+	fi
+
+	printf -- "%b" "${*}"
+	return "${eok}"
+}
+
+msgout() {
+	if [ "${NOLOG}" -ne "${true}" ] ; then
+		log_entry "${@}"
+	fi
+
+	if [ "${1}" = "${true}" ] ; then
+		shift "${true}"
+	fi
+
+	if [ "${QUIET}" -ne "${true}" ] ; then
+		msg "${*}"
+	fi
+
+	return "${eok}"
+}
+
+msgerr() {
+	if [ "${NOLOG}" -ne "${true}" ] ; then
+		log_entry "${@}"
+	fi
+
+	if [ "${1}" = "${true}" ] ; then
+		shift "${true}"
+	fi
+
+	msg "${2}" >&2
+
+	if [ "${QUIET}" -ne "${true}" ] ; then
+		usage "${1}" >&2
+	fi
+
+	return "${eok}"
+}
+
+# ===========================================
+# Standard messages may need to be customized
+# ===========================================
+
+msgout_nl() {
+	msgout "${true}" '\n'
+	return ${?}
+}
+
+msgout_done() {
+	msgout "${true}" " done${*}"
+	return ${?}
+}
+
+msgout_done_nl() {
+	msgout_done '\n'
+	return ${?}
+}
+
+msgout_done_nlnl() {
+	msgout_done "\n\n"
+	return ${?}
+}
+
+msgout_failed() {
+	msgout "${true}" " FAILED${*}"
+	return ${?}
+}
+
+msgout_failed_nl() {
+	msgout_failed '\n'
+	return ${?}
+}
+
+msgout_failed_nlnl() {
+	msgout_failed "\n\n"
+	return ${?}
+}
+
+msgout_version() {
+	msgout "\nLicense GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.\n\nWritten by ${AUTHOR}\n"
+	return ${?}
+}
+
+# ========================================
+# Error messages may need to be customized
+# ========================================
+
+msgerr_generic_interr() {
+	msg "ERROR:\tInternal error, conditions that brought up this message were: '${*}'.\n\n" >&2
+	return ${?}
+}
+
+msgerr_pause() {
+	msg "ERROR:\tUnknown mode '${1}' while invoking pause(), aborting function.\n\n" >&2
+	return ${?}
+}
+
+msgerr_genpass() {
+	msg "ERROR:\tUnknown random password level '${1}' while invoking genpass(), aborting function.\n\n" >&2
+	return ${?}
+}
+
+msgerr_missingbins_required() {
+	msg "CRITICAL:\tMissing required binary '${1}', unable to proceed!\n\n" >&2
+	return ${?}
+}
+
+msgerr_log_init() {
+	msg "CRITICAL:\tFailed to initialize log, unable to proceed!\n\n" >&2
+	return ${?}
+}
+
+msgerr_log_end_mv() {
+	NOLOG=${true}
+	msgerr "ERROR:\tFailed to backup existing log.\n\n"
+	return ${?}
+}
+
+msgerr_log_end_cp() {
+	NOLOG=${true}
+	msgerr "ERROR:\tFailed to copy current log.\n\n"
+	return ${?}
+}
+
+msgerr_cmdline_missarg() {
+	msgerr "" "ERROR:\tMissing argument for parameter '-${1}'.\n\n"
+	return ${?}
+}
+
+msgerr_cmdline_unknownopt() {
+	msgerr "" "ERROR:\tUnknown option '${1}'.\n\n"
+	return ${?}
+}
+
+msgerr_cmdline_unexpectedarg() {
+	msgerr  "" "ERROR:\tUnexpected positional arguments: '${*}'\n\n"
+	return ${?}
+}
+
+# ============================
+# Usage needs to be customized
+# ============================
+usage() {
+	printf -- "Usage:\t%s [ -V ] [ -h | -v ]\n\tOptions:\n\t\t-h\t\tShow this help screen\n\t\t-V\t\tVerbose mode / Show instructions (if before '-h')\n\t\t-v\t\tShow version\n" "${INVOCATION}"
+
+	if [ "${QUIET}" -eq "${false}" ]; then
+		printf -- "\tInstructions:\n\t\t1. Copy (or inject) '%s' to a suitable location inside the image\n\t\t   (i.e. %s)\n\t\t2.\n\t\t   1. For Docker, set ENTRYPOINT directive to:\n\t\t\tENTRYPOINT [\"<PATH_TO>/%s\"]\n\t\t   2. For Kubernetes, set deployment's or statefull or daemon set's\n\t\t      /spec/template/spec/containers[]/command[] to:\n\t\t\tspec:\n\t\t\t  template:\n\t\t\t    spec:\n\t\t\t      containers:\n\t\t\t        - command:\n\t\t\t            - <PATH_TO>/%s\n\t\t3. Create scripts or binaries to run intended commands at startup, i.e.:\n\t\t\t#!/bin/sh\n\t\t\tprintf -- \"Running mycommand\\\n\"\n\t\t\t<PATH_TO>/mycommand\n\t\t4. Copy (or inject) the created scripts or binaries to one of the expected\n\t\t   locations inside the image:\n\t\t   1. Primary location will be '\$(dirname <PATH_TO>/%s)/../etc/entrypoint.d'\n\t\t   2. If '%s' is located in %s,\n\t\t      then primary location will be '%s'\n\t\t   3. Secondary locations are, in increasing order of priority,\n\t\t      (unless one is the primary location which has the highest priority):\n%b\n\t\t   4. Higher priority locations may override commands from lower priority\n\t\t      locations, i.e. 'mycommand' called from a script in the primary\n\t\t      location may override 'mycommand' called from a script in any\n\t\t      secondary location if invocation is conflicting\n\t\t   5. Make sure scripts and binaries have the executable bit set, i.e.:\n\t\t\tchmod a+x <PATH_TO_LOCATION>/myscript\n\t\t5. Script or binary namming determines the order of execution within each\n\t\t   location, the accepted namespace is, in lexicographic order:\n\t\t\tASCII digits\n\t\t\tASCII lower-case letters\n\t\t\tASCII upper-case letters\n\t\t\tASCII underscore\n\t\t\tASCII minus-hyphen\n\n" "${INVOCATION}" "'/usr/local/sbin', '/opt/sbin' or '/sbin'" "${INVOCATION}" "${INVOCATION}" "${INVOCATION}" "${INVOCATION}" "either '/usr/sbin' or '/usr/bin'" "/etc/entrypoint.d" "\t\t\t'/etc/entrypoint.d'\n\t\t\t'/opt/etc/entrypoint.d'\n\t\t\t'/usr/local/etc/entrypoint.d'"
+	fi
+
+	return "${eok}"
+}
+
+# =============================================
+# Command line parameters need to be customized
+# =============================================
+cmdline() {
+	_optstr=":hVv"
+
+	while getopts "${_optstr}" _option ; do
+		case "${_option}" in
+			h)
+				if [ "${QUIET}" -ne "${true}" ] ; then
+					header
+				fi
+
+				usage
+				return "${eok}"
+				;;
+			V)
+				iswriteable "QUIET" && readonly QUIET="${false}"
+				;;
+			v)
+				if [ "${QUIET}" -ne "${true}" ] ; then
+					header
+				fi
+
+				version
+				return "${eok}"
+				;;
+			:)
+				msgerr_cmdline_missarg "${OPTARG}"
+				return "${enok}"
+				;;
+			*)
+				msgerr_cmdline_unknownopt "${_option}"
+				return "${enok}"
+				;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+
+	log_init
+	_cl_ret=${?}
+
+	if [ "${_cl_ret}" -ne "${eok}" ] ; then
+		return "${_cl_ret}"
+	fi
+
+	if [ ${#} -ne "${false}" ] ; then
+		msgerr_cmdline_unexpectedarg "${*}"
+
+		if [ "${QUIET}" -ne "${true}" ] ; then
+			header
+		fi
+
+		usage
+		return "${enok}"
+	fi
+
+	return "${ecmd}"
+}
+
+# =======================================
+# Missing binaries needs to be customized
+# =======================================
+missingbins() {
+	for bin in ${MISSBINS} ; do
+		case "${bin}" in
+			*)
+				msgerr_missingbins_required "${bin}"
+				return "${enok}"
+				;;
+		esac
+	done
+
+	return "${eok}"
+}
+
+# ============================================
+# Script specific functions go below this line
+# ============================================
+
+initvars() {
+	initvars_etcdir="$(cd "$(${dirname} "${SCRIPTDIR}")/etc" 2>/dev/null && pwd)"
+
+	if [ -z "${initvars_etcdir}" ] && { [ "${SCRIPTDIR}" = "/usr/sbin" ] || [ "${SCRIPTDIR}" = "/usr/bin" ] ; } ; then
+		initvars_etcdir="/etc"
+	fi
+
+	initvars_entrydir="$(cd "${initvars_etcdir}/entrypoint.d" 2>/dev/null && pwd)"
+	ENTRYDIRS="${initvars_entrydir}"
+
+	for initvars_dir in "/usr/local" "/opt" "" ; do
+		initvars_edir="${initvars_dir}/etc/entrypoint.d"
+
+		if [ "${initvars_edir}" = "${initvars_entrydir}" ] || [ -z "$(cd "${initvars_edir}" 2>/dev/null && pwd)" ] ; then
+			continue
+		else
+			ENTRYDIRS="${initvars_edir} ${ENTRYDIRS}"
+		fi
+	done
+
+	return "${eok}"
+}
+
+runpart() {
+	runpart_ret=${eok}
+
+	for runpart_env in ${EXPORT_ENV} ; do
+		eval export "EP_${runpart_env}"="\${""${runpart_env}""}"
+	done
+
+	for runpart_dir in ${ENTRYDIRS} ; do
+		${runparts} "${runpart_dir}"
+		runpart_ret=${?}
+
+		if [ "${runpart_ret}" -ne "${eok}" ] ; then
+			return "${runpart_ret}"
+		fi
+	done
+
+	return "${runpart_ret}"
+}
+
+# ============================================
+# Script specific functions go above this line
+# ============================================
+
+# ========================================
+# Initialization may need to be customized
+# ========================================
+init() {
+	missingbins
+	_ii_ret=${?}
+
+	return "${_ii_ret}"
+}
+
+# ===========================
+# Main needs to be customized
+# ===========================
+main() {
+	cmdline "${@}"
+	_mn_ret=${?}
+
+	if [ "${_mn_ret}" -ne "${ecmd}" ] ; then
+		return "${_mn_ret}"
+	else
+		_mn_ret=${eok}
+	fi
+
+	if [ "${QUIET}" -ne "${true}" ] && [ "${HEADER}" -ne "${false}" ] ; then
+		header
+		HEADER=${false}
+	fi
+
+# ==========================================
+# Script specific logic goes below this line
+# ==========================================
+
+	initvars
+	runpart "${ENTRYDIRS}"
+	_mn_ret=${?}
+
+# ==========================================
+# Script specific logic goes above this line
+# ==========================================
+
+	return "${_mn_ret}"
+}
+
+# =================================
+# Cleanup may need to be customized
+# =================================
+cleanup() {
+	_cl_ret=${eok}
+
+	return "${_cl_ret}"
+}
+
+#
+# Prep
+#
+init
+RET=${?}
+
+if [ "${RET}" -ne "${eok}" ] ; then
+	exit "${RET}"
+fi
+
+#
+# Run
+#
+main "${@}"
+RET=${?}
+
+if [ "${RET}" -ne "${eok}" ] ; then
+	exit "${RET}"
+fi
+
+#
+# Exit
+#
+cleanup
+exit ${?}

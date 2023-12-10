@@ -1,0 +1,413 @@
+#!/bin/sh
+# shellcheck disable=2317 enable=add-default-case,avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,quote-safe-variables,require-variable-braces
+
+[ "${DEBUG:=0}" -ne 0 ] && { VERBOSE="${DEBUG}" ; }
+[ "${VERBOSE:=0}" -ne 0 ] && { set -x ; }
+
+# entrypoint
+
+# (2023-07-17)
+
+# Docker/Kubernetes image entry point script launcher, (c) 2023 Lazarus Long <lazarus.long@sapo.pt>
+
+# This program is free software: you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+
+# This program is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+# PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+
+# Modified:
+#	2023-07-17 - Initial version
+#	2023-07-17 - Removed non-used code from SLIM variant
+
+# shellcheck disable=2034 # unused variable (warning)
+{
+
+#
+# Internals
+#
+readonly AUTHOR="Lazarus Long"
+readonly COPYRIGHT="2023 ${AUTHOR}"
+readonly DESC="Docker/Kubernetes image entry point script launcher"
+readonly VERSION="20230717.1401 SLIM"
+
+#
+# Constants
+#
+readonly false=0
+readonly true=$((!false))
+readonly eok=$((false))
+readonly enok=$((true))
+readonly ecmd=$((enok + true))
+
+#
+# Binaries
+#
+basename="$(command -v basename)" && readonly basename || MISSBINS="${MISSBINS} basename"
+date="$(command -v date)" && readonly date || MISSBINS="${MISSBINS} date"
+dirname="$(command -v dirname)" && readonly dirname || MISSBINS="${MISSBINS} dirname"
+id="$(command -v id)" && readonly id || MISSBINS="${MISSBINS} id"
+runparts="$(command -v run-parts)" && readonly runparts || MISSBINS="${MISSBINS} run-parts"
+tr="$(command -v tr)" && readonly tr || MISSBINS="${MISSBINS} tr"
+uname="$(command -v uname)" && readonly uname || MISSBINS="${MISSBINS} uname"
+
+#
+# Runtime
+#
+INVOCATION="$(${basename} "${0}")" && readonly INVOCATION
+CURDATE="$(${date} "+%Y%m%d")" && readonly CURDATE
+CURTIME="$(${date} "+%H%M%S")" && readonly CURTIME
+DATETIME="${CURDATE}${CURTIME}" && readonly DATETIME
+ARCH="$(${uname} -m |sed -e 's|^x86_|amd|;s|^\(i\)\([[:digit:]]\)\(86\)|\13\3|')" && readonly ARCH
+DISTRO="$(if [ -f /etc/os-release ] ; then grep -Po '^ID=\K.*' /etc/os-release |${tr} -d \" ; else printf -- "undef" ; fi)" && readonly DISTRO
+DISTVER="$(if [ -f /etc/os-release ] ; then grep -Po '^VERSION_ID=\K.*' /etc/os-release |${tr} -d \" ; else printf -- "undef" ; fi)" && readonly DISTVER
+SHELL="$(${basename} "${SHELL}")" && readonly SHELL
+(unset "EUID" 2>/dev/null) && { EUID="$(id -u)" && readonly EUID ; }
+EGID="$(${id} -g)" && readonly EGID
+RUID="$(${id} -ur)" && readonly RUID
+RGID="$(${id} -gr)" && readonly RGID
+STARTDIR="$(pwd)" && readonly STARTDIR
+SCRIPTDIR="$(cd "$(${dirname} "${0}")" 2>/dev/null && pwd)" && readonly SCRIPTDIR
+WORKDIR="${WORKDIR:-"${STARTDIR}"}"
+EXPORT_ENV="CURDATE CURTIME DATETIME ARCH DISTRO DISTVER EUID EGID RUID RGID STARTDIR SCRIPTDIR WORKDIR FORCE QUIET" && readonly EXPORT_ENV
+# Boolean
+FORCE="${false}"
+HEADER="${true}"
+KEEPWD="${false}"
+QUIET="${true}"
+
+}
+# end of shellcheck disable=2034 # unused variable (warning)
+
+#
+# Trap functions
+#
+__func_dohook() {
+	__hook="${1}"
+	__funcid=" function$"
+
+	{ type "${__hook}" |grep -q -E "${__funcid}" ; } >/dev/null 2>&1
+
+	[ ${?} -eq "${false}" ] && eval "${__hook}"
+
+	return ${?}
+}
+
+__func_init() {
+	trap __func_exit "${eok}"
+
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && [ "${DEBUG:=${false}}" -ne "${false}" ] && trap __func_break HUP INT QUIT ABRT
+
+	__func_dohook "hook_oninit"
+	return ${?}
+}
+
+__func_exit() {
+	__func_dohook "hook_onexit"
+
+	[ "${VERBOSE:=${false}}" -ne "${false}" ] && { set +x ; }
+
+	return ${?}
+}
+
+__func_break() {
+	__func_dohook "hook_onbreak"
+	return ${?}
+}
+
+# hook_on<break|exit|init> - _MUST_ be declared before call to __func_init
+#
+# hook_onbreak - optional script to be run on signals HUP INT QUIT ABRT
+hook_onbreak() {
+	return ${?}
+}
+#
+# hook_onexit - optional script to be run on normal exit
+hook_onexit() {
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && printf -- "\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n\tRunning in development mode, some functionalities won't work as expected!\n\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n"
+
+	return ${?}
+}
+#
+# hook_oninit - optional script to be run on initialization
+hook_oninit() {
+	[ -f "/etc/os-release" ] || { printf -- "\nCRITICAL:\tThis system is not LSB compliant, unable to proceed!\n\n" >&2 && return "${enok}" ; }
+
+	[ "${DEVEL:=${false}}" -ne "${false}" ] && printf -- "\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n\tRunning in development mode, some functionalities won't work as expected!\n\nWARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING ! WARNING\n\n"
+
+	return "${eok}"
+}
+#
+__func_init || exit ${?}
+# end of hook_on<break|exit|init>
+
+#
+# Functions
+#
+tolower() {
+	printf -- "%b" "${*}" |${tr} '[:upper:]' '[:lower:]'
+	return "${eok}"
+}
+
+iswriteable() {
+	if (unset "${*}" 2>/dev/null) ; then
+		return "${eok}"
+	else
+		return "${enok}"
+	fi
+}
+
+header() {
+	printf -- "%s - %s (%s) - (c) %s\n\n" "${INVOCATION}" "${DESC}" "${VERSION}" "${COPYRIGHT}"
+	return "${eok}"
+}
+
+version() {
+	HEADER=${false}
+	printf -- "Version: %s\n" "${VERSION}"
+	msgout_version
+	return "${eok}"
+}
+
+msg() {
+	if [ "${QUIET}" -ne "${true}" ] && [ "${HEADER}" -eq "${true}" ] ; then
+		header
+	fi
+
+	printf -- "%b" "${*}"
+	return "${eok}"
+}
+
+msgout() {
+	if [ "${1}" = "${true}" ] ; then
+		shift "${true}"
+	fi
+
+	if [ "${QUIET}" -ne "${true}" ] ; then
+		msg "${*}"
+	fi
+
+	return "${eok}"
+}
+
+msgerr() {
+	if [ "${1}" = "${true}" ] ; then
+		shift "${true}"
+	fi
+
+	msg "${2}" >&2
+
+	if [ "${QUIET}" -ne "${true}" ] ; then
+		usage "${1}" >&2
+	fi
+
+	return "${eok}"
+}
+
+msgout_version() {
+	msgout "\nLicense GPLv3+: GNU GPL version 3 or later <http://gnu.org/licenses/gpl.html>.\nThis is free software: you are free to change and redistribute it.\nThere is NO WARRANTY, to the extent permitted by law.\n\nWritten by ${AUTHOR}\n"
+	return ${?}
+}
+
+msgerr_missingbins_required() {
+	msg "CRITICAL:\tMissing required binary '${1}', unable to proceed!\n\n" >&2
+	return ${?}
+}
+
+msgerr_cmdline_missarg() {
+	msgerr "" "ERROR:\tMissing argument for parameter '-${1}'.\n\n"
+	return ${?}
+}
+
+msgerr_cmdline_unknownopt() {
+	msgerr "" "ERROR:\tUnknown option '${1}'.\n\n"
+	return ${?}
+}
+
+msgerr_cmdline_unexpectedarg() {
+	msgerr  "" "ERROR:\tUnexpected positional arguments: '${*}'\n\n"
+	return ${?}
+}
+
+usage() {
+	printf -- "Usage:\t%s [ -V ] [ -h | -v ]\n\tOptions:\n\t\t-h\t\tShow this help screen\n\t\t-V\t\tVerbose mode / Show instructions (if before '-h')\n\t\t-v\t\tShow version\n" "${INVOCATION}"
+
+	if [ "${QUIET}" -eq "${false}" ]; then
+		printf -- "\tInstructions:\n\t\t1. Copy (or inject) '%s' to a suitable location inside the image\n\t\t   (i.e. %s)\n\t\t2.\n\t\t   1. For Docker, set ENTRYPOINT directive to:\n\t\t\tENTRYPOINT [\"<PATH_TO>/%s\"]\n\t\t   2. For Kubernetes, set deployment's or statefull or daemon set's\n\t\t      /spec/template/spec/containers[]/command[] to:\n\t\t\tspec:\n\t\t\t  template:\n\t\t\t    spec:\n\t\t\t      containers:\n\t\t\t        - command:\n\t\t\t            - <PATH_TO>/%s\n\t\t3. Create scripts or binaries to run intended commands at startup, i.e.:\n\t\t\t#!/bin/sh\n\t\t\tprintf -- \"Running mycommand\\\n\"\n\t\t\t<PATH_TO>/mycommand\n\t\t4. Copy (or inject) the created scripts or binaries to one of the expected\n\t\t   locations inside the image:\n\t\t   1. Primary location will be '\$(dirname <PATH_TO>/%s)/../etc/entrypoint.d'\n\t\t   2. If '%s' is located in %s,\n\t\t      then primary location will be '%s'\n\t\t   3. Secondary locations are, in increasing order of priority,\n\t\t      (unless one is the primary location which has the highest priority):\n%b\n\t\t   4. Higher priority locations may override commands from lower priority\n\t\t      locations, i.e. 'mycommand' called from a script in the primary\n\t\t      location may override 'mycommand' called from a script in any\n\t\t      secondary location if invocation is conflicting\n\t\t   5. Make sure scripts and binaries have the executable bit set, i.e.:\n\t\t\tchmod a+x <PATH_TO_LOCATION>/myscript\n\t\t5. Script or binary namming determines the order of execution within each\n\t\t   location, the accepted namespace is, in lexicographic order:\n\t\t\tASCII digits\n\t\t\tASCII lower-case letters\n\t\t\tASCII upper-case letters\n\t\t\tASCII underscore\n\t\t\tASCII minus-hyphen\n\n" "${INVOCATION}" "'/usr/local/sbin', '/opt/sbin' or '/sbin'" "${INVOCATION}" "${INVOCATION}" "${INVOCATION}" "${INVOCATION}" "either '/usr/sbin' or '/usr/bin'" "/etc/entrypoint.d" "\t\t\t'/etc/entrypoint.d'\n\t\t\t'/opt/etc/entrypoint.d'\n\t\t\t'/usr/local/etc/entrypoint.d'"
+	fi
+
+	return "${eok}"
+}
+
+cmdline() {
+	_optstr=":hVv"
+
+	while getopts "${_optstr}" _option ; do
+		case "${_option}" in
+			h)
+				if [ "${QUIET}" -ne "${true}" ] ; then
+					header
+				fi
+
+				usage
+				return "${eok}"
+				;;
+			V)
+				iswriteable "QUIET" && readonly QUIET="${false}"
+				;;
+			v)
+				if [ "${QUIET}" -ne "${true}" ] ; then
+					header
+				fi
+
+				version
+				return "${eok}"
+				;;
+			:)
+				msgerr_cmdline_missarg "${OPTARG}"
+				return "${enok}"
+				;;
+			*)
+				msgerr_cmdline_unknownopt "${_option}"
+				return "${enok}"
+				;;
+		esac
+	done
+
+	shift $((OPTIND-1))
+
+	if [ ${#} -ne "${false}" ] ; then
+		msgerr_cmdline_unexpectedarg "${*}"
+
+		if [ "${QUIET}" -ne "${true}" ] ; then
+			header
+		fi
+
+		usage
+		return "${enok}"
+	fi
+
+	return "${ecmd}"
+}
+
+missingbins() {
+	for bin in ${MISSBINS} ; do
+		case "${bin}" in
+			*)
+				msgerr_missingbins_required "${bin}"
+				return "${enok}"
+				;;
+		esac
+	done
+
+	return "${eok}"
+}
+
+initvars() {
+	initvars_etcdir="$(cd "$(${dirname} "${SCRIPTDIR}")/etc" 2>/dev/null && pwd)"
+
+	if [ -z "${initvars_etcdir}" ] && { [ "${SCRIPTDIR}" = "/usr/sbin" ] || [ "${SCRIPTDIR}" = "/usr/bin" ] ; } ; then
+		initvars_etcdir="/etc"
+	fi
+
+	initvars_entrydir="$(cd "${initvars_etcdir}/entrypoint.d" 2>/dev/null && pwd)"
+	ENTRYDIRS="${initvars_entrydir}"
+
+	for initvars_dir in "/usr/local" "/opt" "" ; do
+		initvars_edir="${initvars_dir}/etc/entrypoint.d"
+
+		if [ "${initvars_edir}" = "${initvars_entrydir}" ] || [ -z "$(cd "${initvars_edir}" 2>/dev/null && pwd)" ] ; then
+			continue
+		else
+			ENTRYDIRS="${initvars_edir} ${ENTRYDIRS}"
+		fi
+	done
+
+	return "${eok}"
+}
+
+runpart() {
+	runpart_ret=${eok}
+
+	for runpart_env in ${EXPORT_ENV} ; do
+		eval export "EP_${runpart_env}"="\${""${runpart_env}""}"
+	done
+
+	for runpart_dir in ${ENTRYDIRS} ; do
+		${runparts} "${runpart_dir}"
+		runpart_ret=${?}
+
+		if [ "${runpart_ret}" -ne "${eok}" ] ; then
+			return "${runpart_ret}"
+		fi
+	done
+
+	return "${runpart_ret}"
+}
+
+init() {
+	missingbins
+	_ii_ret=${?}
+
+	return "${_ii_ret}"
+}
+
+main() {
+	cmdline "${@}"
+	_mn_ret=${?}
+
+	if [ "${_mn_ret}" -ne "${ecmd}" ] ; then
+		return "${_mn_ret}"
+	else
+		_mn_ret=${eok}
+	fi
+
+	if [ "${QUIET}" -ne "${true}" ] && [ "${HEADER}" -ne "${false}" ] ; then
+		header
+		HEADER=${false}
+	fi
+
+	initvars
+	runpart "${ENTRYDIRS}"
+	_mn_ret=${?}
+
+	return "${_mn_ret}"
+}
+
+cleanup() {
+	_cl_ret=${eok}
+
+	return "${_cl_ret}"
+}
+
+#
+# Prep
+#
+init
+RET=${?}
+
+if [ "${RET}" -ne "${eok}" ] ; then
+	exit "${RET}"
+fi
+
+#
+# Run
+#
+main "${@}"
+RET=${?}
+
+if [ "${RET}" -ne "${eok}" ] ; then
+	exit "${RET}"
+fi
+
+#
+# Exit
+#
+cleanup
+exit ${?}
