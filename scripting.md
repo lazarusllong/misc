@@ -3,7 +3,7 @@ protocol: page
 title: Scripting languages and interpreters
 permalink: /scripting
 ---
-# [misc](/misc)/scripting
+# [/](/)[misc](/misc)/scripting
 
 ### *Scripting languages and interpreters*
 
