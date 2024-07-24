@@ -3,7 +3,7 @@ protocol: page
 title: \*NIX (Posix / \*\*SH) Shell
 permalink: /scripting/shell
 ---
-# [misc](misc)/[scripting](misc/scripting)/shell
+# [misc](/misc)/[scripting](scripting)/shell
 
 ### *\*NIX (Posix / \*\*SH) Shell*
 
