@@ -5,7 +5,7 @@ permalink: /scripting
 ---
 # misc/scripting
 
-# [misc](/)
+# [misc](/misc)/scripting
 
 ### *Scripting languages and interpreters*
 
