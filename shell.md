@@ -1,6 +1,6 @@
 ---
 protocol: page
-title: *NIX (Posix / **SH) Shell
+title: \*NIX (Posix / \*\*SH) Shell
 permalink: /scripting/shell
 ---
 # misc/scripting/shell
