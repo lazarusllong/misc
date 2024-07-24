@@ -8,4 +8,4 @@ permalink: /scripting
 ### *Scripting languages and interpreters*
 
 #### Available languages and flavours:
-- [**shell**](scripting/shell) - \*NIX (Posix / \*\*SH) Shell
+- [**shell**](scripting/shell) - \*NIX (Posix / \*\*SH) shell scripting
